@@ -1,0 +1,203 @@
+---
+title: " Risk assesment using temperature dependent reaction norms"
+author: "Dominic Brass"
+format: html
+editor: visual
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+## Using reaction norms for risk assessment
+
+When a vector is first detected in a region, or autochthonous transmission is suspected, policy makers need rapid risk assessments to help target surveillance and intervention measures. This means that we need to make predictions of risk using the often limited information already available in the literature. For this purpose temperature dependent reaction norms are a useful resource as they are routinely parameterised from laboratory experiments.
+
+During this practical you will use temperature dependent reaction norms to produce an initial assessment of the ability of *Aedes albopictus* to become established in the UK by comparing it's traits to those of *Culex pipiens* a mosquito species which is currently widely distributed within the UK.
+
+For the exercise below you will need to install and load the following packages:
+
+```{r}
+library(sf)
+library(sp)
+library(raster)
+library(ncdf4)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(tidyr)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+
+```
+
+## Defining reaction norms
+
+We begin by selecting the temperature dependent reaction norms we will use to predict risk. In this case we use the relationship between juvenile development and temperature taken from [Mordecai et al. (2019)](https://onlinelibrary.wiley.com/doi/10.1111/ele.13335).
+
+For the immature development rate of both species Mordecai *et al.* parametrise Briere functions which take the form, $aT(T-T_{min})(T_{max} - T)$. Briere functions require three parameters, the trait's upper and lower thermal limits and a scaling parameter that defines the functions maximum value. 
+
+We define a Briere function to calculate development rate:
+
+```{r}
+#Defines the briere function used to predict mosquito development
+briere <- function(temp,aa,Tmin,Tmax){
+  out = ifelse(aa * temp * (temp - Tmin) * (Tmax - temp)^(1 / 2) > 0,
+               aa * temp * (temp - Tmin) * (Tmax - temp)^(1 / 2),  
+               0)
+  out = ifelse(temp <=  Tmin,0,  out)
+  out = ifelse(is.na(out) == T, 0 , out)
+  return(out)
+}
+
+```
+
+We then define the parameter value for each of our species:
+
+```{r}
+
+#Parameters for a Briere function defining juvenile development rate for aedes albopictus
+albo_Tmin <- 8.7  
+albo_Tmax <- 39.6
+albo_aa   <- 6.33*10^{-5 }
+
+#Parameters for a Briere function defining juvenile development rate for Culex pipens
+pipi_Tmin <- 0.1 
+pipi_Tmax <- 38.5
+pipi_aa   <- 3.76*10^{-5 }
+
+```
+
+By plotting these functions we can compare the response of each species to temperature. We observe that *Culex pipiens* develops more slowly than *Aedes albopicuts* but can complete development at lower temperatures.
+
+```{r}
+
+#Defines a vector of temperatures to apply our functions over
+Temps   <- seq(0,50, length = 200) 
+
+#Applies the Briere functions to the tmperature vector
+albo_out <- mapply(briere,Temps,albo_aa,albo_Tmin,albo_Tmax)
+pipi_out <- mapply(briere,Temps,pipi_aa,pipi_Tmin,pipi_Tmax)
+
+#Plots the reaction norm
+rn_graph <- ggplot() +
+             geom_line(aes(x = Temps, y = albo_out, col = "Aedes albopictus")) +
+             geom_line(aes(x = Temps, y = pipi_out, col = "Culex pipiens")) +
+              xlab("Temperature (°C)") + 
+              ylab("Development rate (1/Day)") + 
+  labs(colour="Species") + 
+             theme_bw()
+
+rn_graph
+```
+
+{{< pagebreak >}}
+
+## Loading in climate data
+
+Now we have defined our reaction norms we need to apply them to environmental data. The [HADUK climate dataset](https://catalogue.ceda.ac.uk/uuid/46f8c1377f8849eeb8570b8ac9b26d86) is provided by the met-office and provides 1kmx1km predictions of monthly average 2m-temperature for the UK. Climate data is often supplied as a netcdf or .nc file which we can load into R using the raster package. The data we have supplied describes the monthly average temperature in the 2022 in the UK for each month. From these climatic averages we can see that the temperature in the UK is often below the minimum required for immature development.
+
+```{r}
+#Loads climate data
+t_in_2022  <- stack("tas_2022.nc") 
+
+#Reduces the resolution of the raster for the practical
+t_2022 <- aggregate(t_in_2022, 10) 
+
+# Plots climate data
+plot(t_2022) 
+```
+
+{{< pagebreak >}}
+
+## Making predictions
+
+Using these climate layers we apply our reaction norms across the whole of the UK to predict the suitability for both species.
+
+```{r}
+#Calculates development over the raster for each species and outputs to a new 
+#raster
+albo_calc <- overlay(t_2022,fun = function(x)  
+                     briere(x,albo_aa,albo_Tmin,albo_Tmax))
+pipi_calc <- overlay(t_2022,fun = function(x)  
+                            briere(x,pipi_aa,pipi_Tmin,pipi_Tmax))
+
+#Converts new rater to a dataframe for plotting
+albo_out <-as.data.frame(albo_calc, xy = TRUE)
+pipi_out <-as.data.frame(pipi_calc, xy = TRUE)
+
+#Pivots the dataset from wide to long so we can compare months
+albo_long_df <- 
+  albo_out %>%
+  pivot_longer(
+    c(-x, -y),
+    names_to = "month",
+        names_prefix = "layer.",
+    values_to = "dev"
+  ) 
+
+pipi_long_df <- 
+  pipi_out %>%
+  pivot_longer(
+    c(-x, -y),
+    names_to = "month",
+        names_prefix = "layer.",
+    values_to = "dev"
+  ) 
+```
+
+With the reaction norms applied we now plot our predictions of the development rate of each species in the UK during 2022.
+
+```{r}
+#This step may take a while, if it won't run on your computer try filtering the
+#data to only contain a single month and remove "facet_wrap(month ~.) from 
+#the ggplot. Alternatively increase the number in the aggreagate function 
+#to down res the raster even further.
+  
+#Plots development rate over the UK for 2022
+
+albo_plot <- ggplot() +
+  geom_raster(data = albo_long_df,
+              aes(x = (x),
+                  y = (y),
+                  fill = ( (as.numeric(dev *30  )))), 
+                  interpolate = TRUE) +
+  facet_wrap(as.integer(month) ~.) + 
+  scale_fill_viridis_c(option = "plasma",
+                       name = paste("Total development per month", sep = "")) +
+  theme_void() +
+  theme(legend.position = "bottom")  + 
+  coord_equal() + labs(title="Development of Aedes albopictus by month")
+
+
+pipi_plot <- ggplot() +
+  geom_raster(data = pipi_long_df,
+              aes(x = (x),
+                  y = (y),
+                  fill = ( (as.numeric(dev *30  )))), 
+                  interpolate = TRUE) +
+  facet_wrap(as.integer(month) ~.) + 
+  scale_fill_viridis_c(option = "plasma",
+                       name = paste("Total development per month", sep = "")) +
+  theme_void() +
+  theme(legend.position = "bottom") + 
+  coord_equal()  + 
+  labs(title="Development of Culex pipiens by month")
+
+
+albo_plot 
+pipi_plot
+```
+{{< pagebreak >}}
+
+## Questions
+
+Based on the previous analysis what recommendations would you make to a policy maker about the risk that *Aedes albopictus* poses in the UK?
+
+Additionally choose and explore one of the following prompts:
+
+1.  What are the limitations of the previous analysis? How might you improve it given more time and data? (Suggested starting points: How realistic is the vector ecology? Is 2022 representative of the UK climate?)
+2.  Mordecai et al. also supply the reaction norms needed to construct the R0 for the transmission of dengue virus by Aedes albopictus. Is the UK at risk of a dengue outbreak?
+3.  How might uncertainty in the reaction norms change our predictions? (Hint: Mordecai et al. (2019) provide confidence intervals in Table S1)
+4.  Mordecai et al. (2019) provide further reaction norms for other mosquito species, which should a policy maker in the UK be most concerned about?
